@@ -1,15 +1,18 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import os
 import time
 import asyncio
+import logging
 from datetime import datetime, timezone
 
 from parser import parse_resume_content
 from intent_builder import PreferenceInput, GeneratedIntentResponse, build_search_intents
 from core.orchestrator import (
+    orchestrate,
     fetch_all_jobs_realtime,
     merge_3_scrapers_linkedin,
     merge_3_scrapers_indeed,
@@ -27,12 +30,20 @@ from fetchers.boards.linkedin_scrapegraph import fetch_linkedin_scrapegraph
 from fetchers.boards.indeed_scrapling import fetch_indeed_scrapling
 from fetchers.boards.naukri_scrapling import fetch_naukri_scrapling
 
+# Configure standard logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("hirepulse.api")
+
 app = FastAPI(
     title="HirePulse API",
-    description="Resume-aware universal job engine backend API - 100% Live Real-Time Aggregator",
-    version="1.0.0"
+    description="Resume-aware universal job engine backend API - 100% Live Real-Time Multi-Layer Aggregator",
+    version="2.0.0"
 )
 
+# 1. CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,6 +51,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 2. Request Logging Middleware
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    start_time = time.time()
+    client_ip = request.client.host if request.client else "unknown"
+    logger.info(f"--> [{request.method}] {request.url.path} from {client_ip}")
+
+    try:
+        response = await call_next(request)
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        logger.info(f"<-- [{request.method}] {request.url.path} completed with HTTP {response.status_code} in {duration_ms}ms")
+        return response
+    except Exception as exc:
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        logger.error(f"<-- [{request.method}] {request.url.path} FAILED in {duration_ms}ms: {exc}", exc_info=True)
+        raise exc
+
+# 3. Global Exception Handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Global exception intercepted on {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "message": "Internal Server Error during job engine processing",
+            "detail": str(exc),
+            "path": request.url.path,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    )
 
 # In-memory storage for active user profile & preferences
 active_user_profile: Dict[str, Any] = {
@@ -78,24 +121,33 @@ def read_root():
     return {
         "status": "online",
         "service": "HirePulse Universal Job Engine API",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "realtime": True,
-        "sources": ["Lever", "Greenhouse", "Ashby", "Workday", "LinkedIn", "Indeed", "Naukri"]
+        "layers": [
+            "Layer 1: JSON APIs (RemoteOK, Hacker News)",
+            "Layer 2: Indian Tech Portals (Internshala, Cutshort, Instahyre)",
+            "Layer 3: ATS Direct Endpoints (Lever, Greenhouse, Ashby, Workday)",
+            "Layer 4: Enhanced Boards (LinkedIn, Indeed, Naukri with JobSpy)"
+        ]
     }
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "service": "HirePulse Backend"
+    }
 
 @app.get("/api/debug/live")
 async def debug_live_fetchers(
     role: str = Query(default="Frontend Developer"),
     location: str = Query(default="Bangalore")
 ):
-    """Debug endpoint verifying all 7 live sources concurrently without seed data."""
+    """Telemetry endpoint verifying all live sources concurrently without seed data."""
     t0 = time.time()
     now_iso = datetime.now(timezone.utc).isoformat()
-    
+
     tasks = [
         fetch_lever_jobs(role, location),
         fetch_greenhouse_jobs(role, location),
@@ -107,18 +159,18 @@ async def debug_live_fetchers(
         fetch_indeed_scrapling(role, location),
         fetch_naukri_scrapling(role, location)
     ]
-    
+
     res = await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     lever_jobs = res[0] if isinstance(res[0], list) else []
     gh_jobs = res[1] if isinstance(res[1], list) else []
     ashby_jobs = res[2] if isinstance(res[2], list) else []
     wd_jobs = res[3] if isinstance(res[3], list) else []
-    
+
     li_scrapling = res[4] if isinstance(res[4], list) else []
     li_crawl4ai = res[5] if isinstance(res[5], list) else []
     li_scrapegraph = res[6] if isinstance(res[6], list) else []
-    
+
     ind_jobs = res[7] if isinstance(res[7], list) else []
     nk_jobs = res[8] if isinstance(res[8], list) else []
 
@@ -139,23 +191,15 @@ async def debug_live_fetchers(
             "indeed": len(ind_jobs),
             "naukri": len(nk_jobs),
             "total_raw_live": len(lever_jobs) + len(gh_jobs) + len(ashby_jobs) + len(wd_jobs) + len(li_scrapling) + len(li_crawl4ai) + len(li_scrapegraph) + len(ind_jobs) + len(nk_jobs)
-        },
-        "samples": {
-            "lever": lever_jobs[0].model_dump() if lever_jobs else None,
-            "greenhouse": gh_jobs[0].model_dump() if gh_jobs else None,
-            "ashby": ashby_jobs[0].model_dump() if ashby_jobs else None,
-            "workday": wd_jobs[0].model_dump() if wd_jobs else None,
-            "linkedin": li_scrapling[0].model_dump() if li_scrapling else None,
-            "indeed": ind_jobs[0].model_dump() if ind_jobs else None,
-            "naukri": nk_jobs[0].model_dump() if nk_jobs else None
         }
     }
 
 @app.post("/api/parse-resume")
 async def parse_resume(file: UploadFile = File(...)):
+    """Parse resume PDF/DOCX into structured skills and profile information."""
     filename = file.filename or "resume.pdf"
     ext = os.path.splitext(filename)[1].lower()
-    
+
     if ext not in [".pdf", ".docx", ".doc", ".txt"]:
         raise HTTPException(
             status_code=400,
@@ -173,7 +217,7 @@ async def parse_resume(file: UploadFile = File(...)):
         parsed_result = parse_resume_content(file_bytes, filename)
         global active_user_profile
         active_user_profile = parsed_result.copy()
-        
+
         try:
             save_user_profile(
                 profile_id="user_active",
@@ -190,6 +234,7 @@ async def parse_resume(file: UploadFile = File(...)):
 
         return parsed_result
     except Exception as e:
+        logger.error(f"Failed to parse resume {filename}: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to parse resume: {str(e)}"
@@ -204,7 +249,7 @@ def update_profile(profile_data: ProfileUpdateRequest):
     global active_user_profile
     data = profile_data.model_dump(exclude_unset=True)
     active_user_profile.update(data)
-    
+
     try:
         save_user_profile(
             profile_id="user_active",
@@ -268,32 +313,52 @@ async def get_jobs(
     role: str = Query(default="Frontend Developer", description="Target role (e.g. Frontend Developer, Backend Developer, Software Engineer)"),
     location: str = Query(default="Bangalore", description="Target location (e.g. Bangalore, Remote, India)"),
     exp: str = Query(default="fresher", description="Experience tier: fresher, 0-1, 0-2, 2-5, 5+"),
+    exp_level: Optional[str] = Query(default=None, description="Alternative alias for exp parameter"),
     is_remote: bool = Query(default=False, description="Remote only toggle"),
-    limit: int = Query(default=500, description="Max jobs to return")
+    limit: int = Query(default=500, description="Max jobs to return"),
+    resume_skills: Optional[str] = Query(default=None, description="Comma-separated resume skills for ranking"),
+    force_refresh: bool = Query(default=False, description="Bypass SQLite cache and force fresh scraping")
 ):
     """
-    Live real-time aggregation across all 7 sources concurrently.
-    Zero seed data, 100% real apply links, sorted by match score high to low.
+    Live real-time aggregation across all 4 layers concurrently using the enhanced orchestrator:
+    - Layer 1: JSON APIs (RemoteOK, Hacker News)
+    - Layer 2: Indian Tech Portals (Internshala, Cutshort, Instahyre)
+    - Layer 3: Direct ATS APIs (Lever, Greenhouse, Ashby, Workday with 130+ companies)
+    - Layer 4: Enhanced Boards (LinkedIn, Indeed, Naukri with JobSpy)
+    
+    Zero seed data, 100% live apply links, client-side filtered, and ranked by resume match score.
     """
     global active_user_profile, active_user_preferences
 
     try:
-        candidate_skills = active_user_profile.get("skills") or ["React", "TypeScript", "Node.js", "Python", "FastAPI"]
-        candidate_years = float(active_user_profile.get("total_experience_years") or 1.0)
-        candidate_bracket = exp or active_user_preferences.get("experience_bracket") or "fresher"
+        # Determine candidate skills for matching
+        if resume_skills:
+            candidate_skills = [s.strip() for s in resume_skills.split(",") if s.strip()]
+        else:
+            candidate_skills = active_user_profile.get("skills") or ["React", "TypeScript", "Node.js", "Python", "FastAPI"]
 
-        result = await fetch_all_jobs_realtime(
+        candidate_years = float(active_user_profile.get("total_experience_years") or 1.0)
+        candidate_bracket = exp_level or exp or active_user_preferences.get("experience_bracket") or "fresher"
+
+        logger.info(
+            f"API /api/jobs called: role='{role}', location='{location}', "
+            f"exp='{candidate_bracket}', is_remote={is_remote}, limit={limit}"
+        )
+
+        result = await orchestrate(
             role=role,
             location=location,
             exp=candidate_bracket,
             is_remote=is_remote,
             candidate_skills=candidate_skills,
             candidate_years=candidate_years,
-            limit=limit
+            limit=limit,
+            force_refresh=force_refresh
         )
 
         return result
     except Exception as e:
+        logger.error(f"Live job aggregation endpoint failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Live job aggregation failed: {str(e)}"

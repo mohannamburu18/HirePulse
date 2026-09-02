@@ -31,4 +31,6 @@ venv/
 .venv/
 env/
 .env
+*.db*
+test_results.json
 

@@ -7,28 +7,32 @@ from ..base import JobListing, is_role_match, is_location_match
 
 logger = logging.getLogger(__name__)
 
-WORKDAY_ENDPOINTS = [
-    {
-        "company": "Salesforce",
-        "url": "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/salesforce/External_Career_Site/jobs",
-        "base_link": "https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site"
-    },
-    {
-        "company": "Adobe",
-        "url": "https://adobe.wd5.myworkdayjobs.com/wday/cxs/adobe/external_experienced/jobs",
-        "base_link": "https://adobe.wd5.myworkdayjobs.com/en-US/external_experienced"
-    },
-    {
-        "company": "Nvidia",
-        "url": "https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/NVIDIAExternalCareerSite/jobs",
-        "base_link": "https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite"
-    },
-    {
-        "company": "Target",
-        "url": "https://target.wd5.myworkdayjobs.com/wday/cxs/target/targetcareers/jobs",
-        "base_link": "https://target.wd5.myworkdayjobs.com/en-US/targetcareers"
-    }
-]
+try:
+    from ..companies import WORKDAY_COMPANIES as WORKDAY_ENDPOINTS
+except Exception:
+    WORKDAY_ENDPOINTS = [
+        {
+            "company": "Salesforce",
+            "url": "https://salesforce.wd12.myworkdayjobs.com/wday/cxs/salesforce/External_Career_Site/jobs",
+            "base_link": "https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site"
+        },
+        {
+            "company": "Adobe",
+            "url": "https://adobe.wd5.myworkdayjobs.com/wday/cxs/adobe/external_experienced/jobs",
+            "base_link": "https://adobe.wd5.myworkdayjobs.com/en-US/external_experienced"
+        },
+        {
+            "company": "Nvidia",
+            "url": "https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/NVIDIAExternalCareerSite/jobs",
+            "base_link": "https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite"
+        },
+        {
+            "company": "Target",
+            "url": "https://target.wd5.myworkdayjobs.com/wday/cxs/target/targetcareers/jobs",
+            "base_link": "https://target.wd5.myworkdayjobs.com/en-US/targetcareers"
+        }
+    ]
+
 
 async def fetch_workday_single(
     client: httpx.AsyncClient,
